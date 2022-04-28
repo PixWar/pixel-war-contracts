@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-pragma solidity ^0.8.0;
+pragma solidity ^0.8.13;
 
 import "@openzeppelin/contracts/utils/Context.sol";
 import "@openzeppelin/contracts/utils/Address.sol";
@@ -36,6 +36,8 @@ contract PaymentSplitter is Context, Ownable {
   EnumerableSet.AddressSet private _payeesPrimarySales;
   EnumerableSet.AddressSet private _payeesSecondarySales;
 
+  error TransferCallError();
+  
   /**
    * @dev Creates an instance of `PaymentSplitter` where each account in `payeesPrimarySales` and `payeesSecondary sales`
    * is assigned the number of shares at the matching position in the `sharesPrimarySales` and sharesSecondarySales array.
@@ -58,16 +60,19 @@ contract PaymentSplitter is Context, Ownable {
       payeesPrimarySales_.length > 0 && payeesSecondarySales_.length > 0,
       "PaymentSplitter: no payees"
     );
+    unchecked {
+      uint256 payeesPrimary = payeesPrimarySales_.length;
+      for (uint256 i = 0; i < payeesPrimary; i++) {
+          _addPayeePrimarySales(payeesPrimarySales_[i], sharesPrimarySales_[i]);
+      }
 
-    for (uint256 i = 0; i < payeesPrimarySales_.length; i++) {
-      _addPayeePrimarySales(payeesPrimarySales_[i], sharesPrimarySales_[i]);
-    }
-
-    for (uint256 i = 0; i < payeesSecondarySales_.length; i++) {
-      _addPayeeSecondarySales(
-        payeesSecondarySales_[i],
-        sharesSecondarySales_[i]
-      );
+      uint256 payeesSecondary = payeesSecondarySales_.length;
+      for (uint256 i = 0; i < payeesSecondary; i++) {
+          _addPayeeSecondarySales(
+              payeesSecondarySales_[i],
+              sharesSecondarySales_[i]
+          );
+      }
     }
   }
 
@@ -186,15 +191,17 @@ contract PaymentSplitter is Context, Ownable {
     EnumerableSet.AddressSet storage payees,
     mapping(address => uint256) storage shares
   ) internal {
-    for (uint256 i = 0; i < payees.length(); i++) {
-      uint256 payeeAmount = (msg.value * shares[payees.at(i)]) / 100;
-      (bool paymentSucess, ) = payable(payees.at(i)).call{value: payeeAmount}(
-        ""
-      );
-      require(paymentSucess, "Payment failed");
+    uint len = payees.length();
+    uint msgValue = msg.value;
+    unchecked {
+        for (uint256 i = 0; i < len ; i++) {
+            uint256 payeeAmount = (msgValue * shares[payees.at(i)]) / 100;
+            (bool paymentSucess, ) = payable(payees.at(i)).call{value: payeeAmount}("");
+            if(!paymentSucess) revert TransferCallError();
+        }
     }
   }
-
+  
   /**
    * @dev Add a new primary sale payee to the contract.
    * @param account The address of the payee to add.

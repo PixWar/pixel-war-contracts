@@ -1,55 +1,67 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.4;
+pragma solidity ^0.8.13;
 
 import "@openzeppelin/contracts/token/ERC1155/ERC1155.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/interfaces/IERC2981.sol";
-import "@openzeppelin/contracts/utils/introspection/ERC165Checker.sol";
 import "@openzeppelin/contracts/utils/cryptography/draft-EIP712.sol";
 import "@openzeppelin/contracts/utils/Strings.sol";
-import "@openzeppelin/contracts/access/AccessControl.sol";
 
 import "./PaymentSplitter.sol";
 import "./IItem.sol";
 
-struct ClaimItemsVoucher {
-  uint256[] items;
-  uint256[] amounts;
-  bytes data;
-  bytes signature;
-}
+contract HeroItem is IItem, ERC1155, Ownable, EIP712, IERC2981 {
+  using Strings for uint256;
 
-contract HeroItem is IItem, ERC1155, Ownable, EIP712, AccessControl, IERC2981 {
-  bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
+  struct ClaimItemsVoucher {
+    uint256[] items;
+    uint256[] amounts;
+    bytes data;
+    bytes signature;
+  }
+
   string private constant SIGNING_DOMAIN = "Hero-Item";
   string private constant SIGNATURE_VERSION = "1";
   address private _heroContract;
 
+  string private _contractURI;
   address public royaltyReceiver;
   uint8 public royaltyPercentage;
+
+  mapping(address => bool) private _allowedMinters;
 
   constructor(
     address heroContract,
     address signer,
     address payable _royaltyReceiver,
-    uint8 _royaltyPercentage
+    uint8 _royaltyPercentage,
+    string memory contractURI_
   ) ERC1155("") EIP712(SIGNING_DOMAIN, SIGNATURE_VERSION) {
     _heroContract = heroContract;
-    _setupRole(MINTER_ROLE, signer);
+    _allowedMinters[signer] = true;
     royaltyReceiver = _royaltyReceiver;
     royaltyPercentage = _royaltyPercentage;
+    _contractURI = contractURI_;
   }
 
   function supportsInterface(bytes4 interfaceId)
     public
     view
     virtual
-    override(ERC1155, AccessControl, IERC165)
+    override(ERC1155, IERC165)
     returns (bool)
   {
     return
       type(IERC2981).interfaceId == interfaceId ||
       super.supportsInterface(interfaceId);
+  }
+
+  function contractURI() public view returns (string memory) {
+    return _contractURI;
+  }
+
+  function setContractURI(string memory contractURI_) external {
+    _contractURI = contractURI_;
   }
 
   function setUri(string memory uri_) public onlyOwner {
@@ -90,7 +102,10 @@ contract HeroItem is IItem, ERC1155, Ownable, EIP712, AccessControl, IERC2981 {
 
   function claim(ClaimItemsVoucher calldata voucher) public {
     address signer = _verifyClaimVoucher(voucher);
-    require(hasRole(MINTER_ROLE, signer), "Signature invalid or unauthorized");
+    require(
+      _allowedMinters[signer] == true,
+      "Signature invalid or unauthorized"
+    );
 
     if (voucher.items.length > 0) {
       _safeBatchTransferFrom(
@@ -159,8 +174,7 @@ contract HeroItem is IItem, ERC1155, Ownable, EIP712, AccessControl, IERC2981 {
     override
     returns (string memory)
   {
-    return
-      string(abi.encodePacked(super.uri(_tokenId), Strings.toString(_tokenId)));
+    return string(abi.encodePacked(super.uri(_tokenId), _tokenId.toString()));
   }
 
   /// @notice Called with the sale price to determine how much royalty

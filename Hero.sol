@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: MIT
-
-pragma solidity ^0.8.0;
-pragma experimental ABIEncoderV2;
+pragma solidity ^0.8.13;
 
 import "@openzeppelin/contracts/token/ERC721/extensions/ERC721Enumerable.sol";
-import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import "@openzeppelin/contracts/token/ERC1155/IERC1155.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/introspection/ERC165Checker.sol";
@@ -12,29 +9,11 @@ import "@openzeppelin/contracts/utils/cryptography/draft-EIP712.sol";
 import "@openzeppelin/contracts/interfaces/IERC2981.sol";
 import "@openzeppelin/contracts/utils/Strings.sol";
 import "@openzeppelin/contracts/utils/Counters.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
 import "./PaymentSplitter.sol";
 import "./ERC998TopDown.sol";
 import "./IItem.sol";
-
-import "@openzeppelin/contracts/access/AccessControl.sol";
-
-struct MintVoucher {
-  uint256 price;
-  address wallet;
-  bytes signature;
-}
-
-struct BulkChangeVoucher {
-  uint256 tokenId;
-  address itemContractAddress;
-  uint256[] itemsToEquip;
-  uint256[] amountsToEquip;
-  uint256[] slotsToEquip;
-  uint256[] itemsToUnequip;
-  uint256[] amountsToUnequip;
-  bytes signature;
-}
 
 /// @title Hero
 /// @notice Hero is a composable NFT designed to equip other ERC1155 tokens
@@ -44,9 +23,26 @@ contract Hero is
   Ownable,
   EIP712,
   IERC2981,
-  AccessControl
+  ReentrancyGuard
 {
   using ERC165Checker for address;
+
+  struct MintVoucher {
+    uint256 price;
+    address wallet;
+    bytes signature;
+  }
+
+  struct BulkChangeVoucher {
+    uint256 tokenId;
+    address itemContractAddress;
+    uint256[] itemsToEquip;
+    uint256[] amountsToEquip;
+    uint256[] slotsToEquip;
+    uint256[] itemsToUnequip;
+    uint256[] amountsToUnequip;
+    bytes signature;
+  }
 
   struct Item {
     address itemAddress;
@@ -67,7 +63,8 @@ contract Hero is
 
   bytes4 internal constant ERC_1155_INTERFACE = 0xd9b67a26;
 
-  bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
+  mapping(address => bool) private _allowedMinters;
+
   string private constant SIGNING_DOMAIN = "Hero";
   string private constant SIGNATURE_VERSION = "1";
 
@@ -92,7 +89,7 @@ contract Hero is
     string memory contractURI_,
     string memory provenanceHash_
   ) ERC998TopDown("Hero", "HERO") EIP712(SIGNING_DOMAIN, SIGNATURE_VERSION) {
-    _setupRole(MINTER_ROLE, signer_);
+    _allowedMinters[signer_] = true;
     maxSupply = maxSupply_;
     _heroCounter.increment();
     baseUri = uri_;
@@ -119,7 +116,7 @@ contract Hero is
     public
     view
     virtual
-    override(ERC721Enumerable, ERC721, AccessControl, IERC165)
+    override(ERC721Enumerable, ERC721, IERC165)
     returns (bool)
   {
     return
@@ -140,20 +137,25 @@ contract Hero is
     onlyAuthorized(bulkChangeVoucher.tokenId)
   {
     address signer = _verifyBulkChangeData(bulkChangeVoucher);
-    require(hasRole(MINTER_ROLE, signer), "Signature invalid or unauthorized");
-    _transferItemIn(
-      bulkChangeVoucher.tokenId,
-      _msgSender(),
-      bulkChangeVoucher.itemContractAddress,
-      bulkChangeVoucher.itemsToEquip,
-      bulkChangeVoucher.amountsToEquip
+    require(
+      _allowedMinters[signer] == true,
+      "Signature invalid or unauthorized"
     );
+
     _transferItemOut(
       bulkChangeVoucher.tokenId,
       ownerOf(bulkChangeVoucher.tokenId),
       bulkChangeVoucher.itemContractAddress,
       bulkChangeVoucher.itemsToUnequip,
       bulkChangeVoucher.amountsToUnequip
+    );
+
+    _transferItemIn(
+      bulkChangeVoucher.tokenId,
+      _msgSender(),
+      bulkChangeVoucher.itemContractAddress,
+      bulkChangeVoucher.itemsToEquip,
+      bulkChangeVoucher.amountsToEquip
     );
 
     emit BulkChanges(
@@ -167,16 +169,17 @@ contract Hero is
     );
   }
 
-  function mint(MintVoucher calldata voucher) external payable {
+  function mint(MintVoucher calldata voucher) external payable nonReentrant {
     require(msg.value == voucher.price, "Voucher: Invalid price amount");
 
     uint256 currentHeroCounter = _heroCounter.current();
     require(currentHeroCounter <= maxSupply, "Hero: No more heroes available");
 
     address signer = _verifyMintData(voucher);
+
     require(
-      hasRole(MINTER_ROLE, signer),
-      "Hero: Mint - Signature invalid or unauthorized"
+      _allowedMinters[signer] == true,
+      "Signature invalid or unauthorized"
     );
 
     require(_msgSender() == voucher.wallet, "Hero: Invalid wallet");
@@ -199,7 +202,11 @@ contract Hero is
     );
 
     address signer = _verifyBulkChangeData(voucher);
-    require(hasRole(MINTER_ROLE, signer), "Signature invalid or unauthorized");
+
+    require(
+      _allowedMinters[signer] == true,
+      "Signature invalid or unauthorized"
+    );
 
     IItem(voucher.itemContractAddress).claimFromHero(
       signer,
