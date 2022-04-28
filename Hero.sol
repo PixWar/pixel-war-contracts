@@ -9,7 +9,6 @@ import "@openzeppelin/contracts/utils/cryptography/draft-EIP712.sol";
 import "@openzeppelin/contracts/interfaces/IERC2981.sol";
 import "@openzeppelin/contracts/utils/Strings.sol";
 import "@openzeppelin/contracts/utils/Counters.sol";
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
 import "./PaymentSplitter.sol";
 import "./ERC998TopDown.sol";
@@ -17,14 +16,7 @@ import "./IItem.sol";
 
 /// @title Hero
 /// @notice Hero is a composable NFT designed to equip other ERC1155 tokens
-contract Hero is
-  ERC721Enumerable,
-  ERC998TopDown,
-  Ownable,
-  EIP712,
-  IERC2981,
-  ReentrancyGuard
-{
+contract Hero is ERC721Enumerable, ERC998TopDown, Ownable, EIP712, IERC2981 {
   using ERC165Checker for address;
 
   struct MintVoucher {
@@ -169,12 +161,11 @@ contract Hero is
     );
   }
 
-  function mint(MintVoucher calldata voucher) external payable nonReentrant {
+  function mint(MintVoucher calldata voucher) external payable {
     require(msg.value == voucher.price, "Voucher: Invalid price amount");
 
     uint256 currentHeroCounter = _heroCounter.current();
     require(currentHeroCounter <= maxSupply, "Hero: No more heroes available");
-
     address signer = _verifyMintData(voucher);
 
     require(
@@ -183,11 +174,11 @@ contract Hero is
     );
 
     require(_msgSender() == voucher.wallet, "Hero: Invalid wallet");
+    callerNonce[_msgSender()]++;
 
     _safeMint(_msgSender(), currentHeroCounter);
     paymentSplitter.receiveFromPrimarySale{value: msg.value}();
     _heroCounter.increment();
-    callerNonce[_msgSender()]++;
   }
 
   function claimItems(BulkChangeVoucher calldata voucher)
