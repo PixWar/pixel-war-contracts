@@ -7,13 +7,13 @@ import "@openzeppelin/contracts/interfaces/IERC2981.sol";
 import "@openzeppelin/contracts/utils/cryptography/draft-EIP712.sol";
 import "@openzeppelin/contracts/utils/Strings.sol";
 
-import "./PaymentSplitter.sol";
 import "./IItem.sol";
 
 contract HeroItem is IItem, ERC1155, Ownable, EIP712, IERC2981 {
   using Strings for uint256;
 
   struct ClaimItemsVoucher {
+    address wallet;
     uint256[] items;
     uint256[] amounts;
     bytes data;
@@ -24,6 +24,7 @@ contract HeroItem is IItem, ERC1155, Ownable, EIP712, IERC2981 {
   string private constant SIGNATURE_VERSION = "1";
   address private _heroContract;
 
+  mapping(address => uint256) private callerNonce;
   string private _contractURI;
   address public royaltyReceiver;
   uint8 public royaltyPercentage;
@@ -68,6 +69,10 @@ contract HeroItem is IItem, ERC1155, Ownable, EIP712, IERC2981 {
     _setURI(uri_);
   }
 
+  function getCallerNonce(address msgSigner) external view returns (uint256) {
+    return callerNonce[msgSigner];
+  }
+
   function updateHeroContract(address heroContract) public onlyOwner {
     _heroContract = heroContract;
   }
@@ -106,6 +111,10 @@ contract HeroItem is IItem, ERC1155, Ownable, EIP712, IERC2981 {
       _allowedMinters[signer] == true,
       "Signature invalid or unauthorized"
     );
+
+    require(_msgSender() == voucher.wallet, "Hero Item: Invalid wallet");
+
+    callerNonce[_msgSender()]++;
 
     if (voucher.items.length > 0) {
       _safeBatchTransferFrom(
@@ -151,6 +160,7 @@ contract HeroItem is IItem, ERC1155, Ownable, EIP712, IERC2981 {
     bytes memory changeInfo = abi.encodePacked(
       voucher.items,
       voucher.amounts,
+      voucher.wallet,
       voucher.data
     );
 
@@ -158,7 +168,8 @@ contract HeroItem is IItem, ERC1155, Ownable, EIP712, IERC2981 {
       this.getChainID(),
       SIGNING_DOMAIN,
       SIGNATURE_VERSION,
-      address(this)
+      address(this),
+      callerNonce[_msgSender()]
     );
 
     return

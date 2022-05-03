@@ -3,9 +3,7 @@
 pragma solidity ^0.8.13;
 
 import "@openzeppelin/contracts/utils/Context.sol";
-import "@openzeppelin/contracts/utils/Address.sol";
-import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 /**
  * @title PaymentSplitter
@@ -13,99 +11,54 @@ import "@openzeppelin/contracts/access/Ownable.sol";
  * that the Ether will be split in this way, since it is handled transparently by the contract.
  *
  * The split can be in equal parts or in any other arbitrary proportion. The way this is specified is by assigning each
- * account to a number of shares. Of all the Ether that this contract receives.
+ * account to a number of shares. Of all the Ether that this contract receives, each account will then be able to claim
+ * an amount proportional to the percentage of total shares they were assigned.
  *
- * There are two different configurations, one for Primary Sales and another one for Secondary sales
+ * `PaymentSplitter` follows a _pull payment_ model. This means that payments are not automatically forwarded to the
+ * accounts but kept in this contract, and the actual transfer is triggered as a separate step by calling the {release}
+ * function.
  *
+ * NOTE: This contract assumes that ERC20 tokens will behave similarly to native tokens (Ether). Rebasing tokens, and
+ * tokens that apply fees during transfers, are likely to not be supported as expected. If in doubt, we encourage you
+ * to run tests before sending real value to this contract.
  */
-contract PaymentSplitter is Context, Ownable {
-  using EnumerableSet for EnumerableSet.UintSet;
-  using EnumerableSet for EnumerableSet.AddressSet;
+contract PaymentSplitter is Context {
+  event PayeeAdded(address account, uint256 shares);
+  event PaymentReleased(address to, uint256 amount);
+  event ERC20PaymentReleased(IERC20 indexed token, address to, uint256 amount);
+  event PaymentReceived(address from, uint256 amount);
 
-  event PrimarySalePayeeAdded(address account, uint256 shares);
-  event SecondarySalePayeeAdded(address account, uint256 shares);
+  uint256 private _totalShares;
+  uint256 private _totalReleased;
 
-  event PrimarySalePaymentReceived(address from, uint256 amount);
-  event SecondarySalePaymentReceived(address from, uint256 amount);
+  mapping(address => uint256) private _shares;
+  mapping(address => uint256) private _released;
+  address[] private _payees;
 
-  event PrimarySalePayeeRemoved(address account);
-  event SecondarySalePayeeRemoved(address account);
+  mapping(IERC20 => uint256) private _erc20TotalReleased;
+  mapping(IERC20 => mapping(address => uint256)) private _erc20Released;
 
-  mapping(address => uint256) private _sharesPrimarySales;
-  mapping(address => uint256) private _sharesSecondarySales;
-  EnumerableSet.AddressSet private _payeesPrimarySales;
-  EnumerableSet.AddressSet private _payeesSecondarySales;
-
-  error TransferCallError();
-  
   /**
-   * @dev Creates an instance of `PaymentSplitter` where each account in `payeesPrimarySales` and `payeesSecondary sales`
-   * is assigned the number of shares at the matching position in the `sharesPrimarySales` and sharesSecondarySales array.
+   * @dev Creates an instance of `PaymentSplitter` where each account in `payees` is assigned the number of shares at
+   * the matching position in the `shares` array.
    *
-   * All addresses in `payeesPrimarySales` and `payeesSecondary` must be non-zero. Both arrays must have the same non-zero
-   * length, and there must be no duplicates.
+   * All addresses in `payees` must be non-zero. Both arrays must have the same non-zero length, and there must be no
+   * duplicates in `payees`.
    */
-  constructor(
-    address[] memory payeesPrimarySales_,
-    uint256[] memory sharesPrimarySales_,
-    address[] memory payeesSecondarySales_,
-    uint256[] memory sharesSecondarySales_
-  ) payable {
+  constructor(address[] memory payees, uint256[] memory shares_) payable {
     require(
-      payeesPrimarySales_.length == sharesPrimarySales_.length &&
-        payeesSecondarySales_.length == sharesSecondarySales_.length,
+      payees.length == shares_.length,
       "PaymentSplitter: payees and shares length mismatch"
     );
-    require(
-      payeesPrimarySales_.length > 0 && payeesSecondarySales_.length > 0,
-      "PaymentSplitter: no payees"
-    );
-    unchecked {
-      uint256 payeesPrimary = payeesPrimarySales_.length;
-      for (uint256 i = 0; i < payeesPrimary; i++) {
-          _addPayeePrimarySales(payeesPrimarySales_[i], sharesPrimarySales_[i]);
-      }
+    require(payees.length > 0, "PaymentSplitter: no payees");
 
-      uint256 payeesSecondary = payeesSecondarySales_.length;
-      for (uint256 i = 0; i < payeesSecondary; i++) {
-          _addPayeeSecondarySales(
-              payeesSecondarySales_[i],
-              sharesSecondarySales_[i]
-          );
-      }
-    }
-  }
-
-  function updatePrimarySalesRoyalties(
-    address[] memory payeesToRemove,
-    address[] memory payeesToAdd,
-    uint256[] memory shares
-  ) external onlyOwner {
-    for (uint256 i = 0; i < payeesToRemove.length; i++) {
-      _removePayeePrimarySales(payeesToRemove[i]);
-    }
-
-    for (uint256 i = 0; i < payeesToAdd.length; i++) {
-      _addPayeePrimarySales(payeesToAdd[i], shares[i]);
-    }
-  }
-
-  function updateSecondarySalesRoyalties(
-    address[] memory payeesToRemove,
-    address[] memory payeesToAdd,
-    uint256[] memory shares
-  ) external onlyOwner {
-    for (uint256 i = 0; i < payeesToRemove.length; i++) {
-      _removePayeeSecondarySales(payeesToRemove[i]);
-    }
-
-    for (uint256 i = 0; i < payeesToAdd.length; i++) {
-      _addPayeeSecondarySales(payeesToAdd[i], shares[i]);
+    for (uint256 i = 0; i < payees.length; i++) {
+      _addPayee(payees[i], shares_[i]);
     }
   }
 
   /**
-   * @dev The Ether received will be logged with {SecondarySalePaymentReceived} events. Note that these events are not fully
+   * @dev The Ether received will be logged with {PaymentReceived} events. Note that these events are not fully
    * reliable: it's possible for a contract to receive Ether without triggering this function. This only affects the
    * reliability of the events, and not the actual splitting of Ether.
    *
@@ -114,171 +67,143 @@ contract PaymentSplitter is Context, Ownable {
    * functions].
    */
   receive() external payable virtual {
-    _splitPayment(_payeesSecondarySales, _sharesSecondarySales);
-    emit SecondarySalePaymentReceived(_msgSender(), msg.value);
+    emit PaymentReceived(_msgSender(), msg.value);
   }
 
   /**
-   * @dev The Ether received from Primary Sales, this method will be called directly from minter contract
+   * @dev Getter for the total shares held by payees.
    */
-  function receiveFromPrimarySale() external payable returns (bool) {
-    _splitPayment(_payeesPrimarySales, _sharesPrimarySales);
-    emit PrimarySalePaymentReceived(_msgSender(), msg.value);
-    return true;
+  function totalShares() public view returns (uint256) {
+    return _totalShares;
   }
 
   /**
-   * @dev Getter for the amount of shares held by an account for primary sales.
+   * @dev Getter for the total amount of Ether already released.
    */
-  function sharesPrimarySales(address[] memory accounts)
+  function totalReleased() public view returns (uint256) {
+    return _totalReleased;
+  }
+
+  /**
+   * @dev Getter for the total amount of `token` already released. `token` should be the address of an IERC20
+   * contract.
+   */
+  function totalReleased(IERC20 token) public view returns (uint256) {
+    return _erc20TotalReleased[token];
+  }
+
+  /**
+   * @dev Getter for the amount of shares held by an account.
+   */
+  function shares(address account) public view returns (uint256) {
+    return _shares[account];
+  }
+
+  /**
+   * @dev Getter for the amount of Ether already released to a payee.
+   */
+  function released(address account) public view returns (uint256) {
+    return _released[account];
+  }
+
+  /**
+   * @dev Getter for the amount of `token` tokens already released to a payee. `token` should be the address of an
+   * IERC20 contract.
+   */
+  function released(IERC20 token, address account)
     public
     view
-    returns (uint256[] memory)
+    returns (uint256)
   {
-    uint256[] memory _sharesArray = new uint256[](accounts.length);
-    for (uint256 i = 0; i < accounts.length; i++) {
-      _sharesArray[i] = _sharesPrimarySales[accounts[i]];
-    }
-    return _sharesArray;
+    return _erc20Released[token][account];
   }
 
   /**
-   * @dev Getter for the amount of shares held by an account for primary sales.
+   * @dev Getter for the address of the payee number `index`.
    */
-  function sharesSecondarySales(address[] memory accounts)
-    public
-    view
-    returns (uint256[] memory)
-  {
-    uint256[] memory _sharesArray = new uint256[](accounts.length);
-    for (uint256 i = 0; i < accounts.length; i++) {
-      _sharesArray[i] = _sharesSecondarySales[accounts[i]];
-    }
-    return _sharesArray;
+  function payee(uint256 index) public view returns (address) {
+    return _payees[index];
   }
 
   /**
-   * @dev Getter all payess for primary sales.
+   * @dev Triggers a transfer to `account` of the amount of Ether they are owed, according to their percentage of the
+   * total shares and their previous withdrawals.
    */
-  function payeePrimarySales() public view returns (address[] memory) {
-    address[] memory _payeesPrimarySalesArray = new address[](
-      _payeesPrimarySales.length()
+  function release(address payable account) public virtual {
+    require(_shares[account] > 0, "PaymentSplitter: account has no shares");
+
+    uint256 totalReceived = address(this).balance + totalReleased();
+    uint256 payment = _pendingPayment(
+      account,
+      totalReceived,
+      released(account)
     );
 
-    for (uint256 i = 0; i < _payeesPrimarySales.length(); i++) {
-      _payeesPrimarySalesArray[i] = _payeesPrimarySales.at(i);
-    }
+    require(payment != 0, "PaymentSplitter: account is not due payment");
 
-    return _payeesPrimarySalesArray;
+    _released[account] += payment;
+    _totalReleased += payment;
+
+    Address.sendValue(account, payment);
+    emit PaymentReleased(account, payment);
   }
 
   /**
-   * @dev Getter all payess for secondary sales.
+   * @dev Triggers a transfer to `account` of the amount of `token` tokens they are owed, according to their
+   * percentage of the total shares and their previous withdrawals. `token` must be the address of an IERC20
+   * contract.
    */
-  function payeeSecondarySales() public view returns (address[] memory) {
-    address[] memory _payeesSecondarySalesArray = new address[](
-      _payeesSecondarySales.length()
+  function release(IERC20 token, address account) public virtual {
+    require(_shares[account] > 0, "PaymentSplitter: account has no shares");
+
+    uint256 totalReceived = token.balanceOf(address(this)) +
+      totalReleased(token);
+    uint256 payment = _pendingPayment(
+      account,
+      totalReceived,
+      released(token, account)
     );
 
-    for (uint256 i = 0; i < _payeesSecondarySales.length(); i++) {
-      _payeesSecondarySalesArray[i] = _payeesSecondarySales.at(i);
-    }
+    require(payment != 0, "PaymentSplitter: account is not due payment");
 
-    return _payeesSecondarySalesArray;
+    _erc20Released[token][account] += payment;
+    _erc20TotalReleased[token] += payment;
+
+    SafeERC20.safeTransfer(token, account, payment);
+    emit ERC20PaymentReleased(token, account, payment);
   }
 
-  function _splitPayment(
-    EnumerableSet.AddressSet storage payees,
-    mapping(address => uint256) storage shares
-  ) internal {
-    uint len = payees.length();
-    uint msgValue = msg.value;
-    unchecked {
-        for (uint256 i = 0; i < len ; i++) {
-            uint256 payeeAmount = (msgValue * shares[payees.at(i)]) / 100;
-            (bool paymentSucess, ) = payable(payees.at(i)).call{value: payeeAmount}("");
-            if(!paymentSucess) revert TransferCallError();
-        }
-    }
-  }
-  
   /**
-   * @dev Add a new primary sale payee to the contract.
+   * @dev internal logic for computing the pending payment of an `account` given the token historical balances and
+   * already released amounts.
+   */
+  function _pendingPayment(
+    address account,
+    uint256 totalReceived,
+    uint256 alreadyReleased
+  ) private view returns (uint256) {
+    return (totalReceived * _shares[account]) / _totalShares - alreadyReleased;
+  }
+
+  /**
+   * @dev Add a new payee to the contract.
    * @param account The address of the payee to add.
    * @param shares_ The number of shares owned by the payee.
    */
-  function _addPayeePrimarySales(address account, uint256 shares_) private {
+  function _addPayee(address account, uint256 shares_) private {
     require(
       account != address(0),
       "PaymentSplitter: account is the zero address"
     );
     require(shares_ > 0, "PaymentSplitter: shares are 0");
     require(
-      _sharesPrimarySales[account] == 0,
-      "PaymentSplitter: account already has shares on primary sales"
+      _shares[account] == 0,
+      "PaymentSplitter: account already has shares"
     );
 
-    _payeesPrimarySales.add(account);
-    _sharesPrimarySales[account] = shares_;
-    emit PrimarySalePayeeAdded(account, shares_);
-  }
-
-  /**
-   * @dev Remove a primary sale payee to the contract.
-   * @param account The address of the payee to remove.
-   */
-  function _removePayeePrimarySales(address account) private {
-    require(
-      account != address(0),
-      "PaymentSplitter: account is the zero address"
-    );
-    require(
-      _sharesPrimarySales[account] > 0,
-      "PaymentSplitter: account does not have shares on primary sales"
-    );
-
-    _payeesPrimarySales.remove(account);
-    _sharesPrimarySales[account] = 0;
-    emit PrimarySalePayeeRemoved(account);
-  }
-
-  /**
-   * @dev Add a new primary sale payee to the contract.
-   * @param account The address of the payee to add.
-   * @param shares_ The number of shares owned by the payee.
-   */
-  function _addPayeeSecondarySales(address account, uint256 shares_) private {
-    require(
-      account != address(0),
-      "PaymentSplitter: account is the zero address"
-    );
-    require(shares_ > 0, "PaymentSplitter: shares are 0");
-    require(
-      _sharesSecondarySales[account] == 0,
-      "PaymentSplitter: account already has shares on secondary sales"
-    );
-
-    _payeesSecondarySales.add(account);
-    _sharesSecondarySales[account] = shares_;
-    emit SecondarySalePayeeAdded(account, shares_);
-  }
-
-  /**
-   * @dev Remove a secondary sale payee to the contract.
-   * @param account The address of the payee to remove.
-   */
-  function _removePayeeSecondarySales(address account) private {
-    require(
-      account != address(0),
-      "PaymentSplitter: account is the zero address"
-    );
-    require(
-      _sharesSecondarySales[account] > 0,
-      "PaymentSplitter: account does not have shares on secondary sales"
-    );
-
-    _payeesSecondarySales.remove(account);
-    _sharesSecondarySales[account] = 0;
-    emit SecondarySalePayeeRemoved(account);
+    _payees.push(account);
+    _shares[account] = shares_;
+    _totalShares = _totalShares + shares_;
+    emit PayeeAdded(account, shares_);
   }
 }

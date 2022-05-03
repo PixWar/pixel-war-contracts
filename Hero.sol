@@ -10,7 +10,6 @@ import "@openzeppelin/contracts/interfaces/IERC2981.sol";
 import "@openzeppelin/contracts/utils/Strings.sol";
 import "@openzeppelin/contracts/utils/Counters.sol";
 
-import "./PaymentSplitter.sol";
 import "./ERC998TopDown.sol";
 import "./IItem.sol";
 
@@ -60,12 +59,12 @@ contract Hero is ERC721Enumerable, ERC998TopDown, Ownable, EIP712, IERC2981 {
   string private constant SIGNING_DOMAIN = "Hero";
   string private constant SIGNATURE_VERSION = "1";
 
+  address public primarySalesReceiver;
   address public royaltyReceiver;
   uint8 public royaltyPercentage;
   string private baseUri;
   uint256 public maxSupply;
 
-  PaymentSplitter paymentSplitter;
   string private _contractURI;
   using Counters for Counters.Counter;
   Counters.Counter private _heroCounter;
@@ -76,6 +75,7 @@ contract Hero is ERC721Enumerable, ERC998TopDown, Ownable, EIP712, IERC2981 {
     uint256 maxSupply_,
     string memory uri_,
     address payable signer_,
+    address payable primarySalesReceiver_,
     address payable royaltyReceiver_,
     uint8 royaltyPercentage_,
     string memory contractURI_,
@@ -85,10 +85,10 @@ contract Hero is ERC721Enumerable, ERC998TopDown, Ownable, EIP712, IERC2981 {
     maxSupply = maxSupply_;
     _heroCounter.increment();
     baseUri = uri_;
+    primarySalesReceiver = primarySalesReceiver_;
     royaltyReceiver = royaltyReceiver_;
     royaltyPercentage = royaltyPercentage_;
     _contractURI = contractURI_;
-    paymentSplitter = PaymentSplitter(royaltyReceiver_);
     provenanceHash = provenanceHash_;
   }
 
@@ -177,7 +177,10 @@ contract Hero is ERC721Enumerable, ERC998TopDown, Ownable, EIP712, IERC2981 {
     callerNonce[_msgSender()]++;
 
     _safeMint(_msgSender(), currentHeroCounter);
-    paymentSplitter.receiveFromPrimarySale{value: msg.value}();
+    (bool paymentSucess, ) = payable(primarySalesReceiver).call{
+      value: msg.value
+    }("");
+    require(paymentSucess, "Hero: Payment failed");
     _heroCounter.increment();
   }
 

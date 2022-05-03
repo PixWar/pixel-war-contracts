@@ -7,8 +7,6 @@ import "@openzeppelin/contracts/utils/Counters.sol";
 import "@openzeppelin/contracts/interfaces/IERC2981.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
-import "./PaymentSplitter.sol";
-
 contract Voucher is EIP712, IERC2981, Ownable {
   struct VoucherInfo {
     uint256 price;
@@ -21,9 +19,11 @@ contract Voucher is EIP712, IERC2981, Ownable {
   string private constant SIGNING_DOMAIN = "Voucher";
   string private constant SIGNATURE_VERSION = "1";
 
-  PaymentSplitter paymentSplitter;
+  address public primarySalesReceiver;
   address public royaltyReceiver;
   uint8 public royaltyPercentage;
+
+  mapping(address => uint256) private callerNonce;
 
   using Counters for Counters.Counter;
   Counters.Counter private _voucherCounter;
@@ -37,11 +37,12 @@ contract Voucher is EIP712, IERC2981, Ownable {
 
   constructor(
     address signer,
+    address payable primarySalesReceiver_,
     address payable _royaltyReceiver,
     uint8 _royaltyPercentage
   ) EIP712(SIGNING_DOMAIN, SIGNATURE_VERSION) {
     _allowedMinters[signer] = true;
-    paymentSplitter = PaymentSplitter(_royaltyReceiver);
+    primarySalesReceiver = primarySalesReceiver_;
     royaltyReceiver = _royaltyReceiver;
     royaltyPercentage = _royaltyPercentage;
     _voucherCounter.increment();
@@ -65,8 +66,18 @@ contract Voucher is EIP712, IERC2981, Ownable {
       "Voucher: Signature invalid or unauthorized"
     );
     require(_msgSender() == voucher.wallet, "Voucher: Invalid wallet");
-    paymentSplitter.receiveFromPrimarySale{value: msg.value}();
+
+    callerNonce[_msgSender()]++;
+
+    (bool paymentSucess, ) = payable(primarySalesReceiver).call{
+      value: msg.value
+    }("");
+    require(paymentSucess, "Voucher: Payment failed");
     emit VoucherSold(voucher.wallet, voucher.contractAddress, voucher.data);
+  }
+
+  function getCallerNonce(address msgSigner) external view returns (uint256) {
+    return callerNonce[msgSigner];
   }
 
   function verifyVoucherInfo(VoucherInfo calldata voucher)
@@ -94,7 +105,8 @@ contract Voucher is EIP712, IERC2981, Ownable {
       this.getChainID(),
       SIGNING_DOMAIN,
       SIGNATURE_VERSION,
-      address(this)
+      address(this),
+      callerNonce[_msgSender()]
     );
 
     return
