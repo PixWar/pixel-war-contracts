@@ -80,64 +80,16 @@ contract ERC998TopDown is ERC721, IERC998ERC1155TopDown {
   }
 
   /**
-   * @dev Transfers child 1155 token from a token ID.
-   */
-  function safeTransferChild1155From(
-    uint256 fromTokenId,
-    address to,
-    address childContract,
-    uint256 childTokenId,
-    uint256 amount,
-    bytes memory data
-  ) public override {
-    require(to != address(0), "ERC998: transfer to the zero address");
-
-    address operator = _msgSender();
-    require(
-      ownerOf(fromTokenId) == operator ||
-        isApprovedForAll(ownerOf(fromTokenId), operator),
-      "ERC998: caller is not owner nor approved"
-    );
-
-    _beforeChild1155Transfer(
-      operator,
-      fromTokenId,
-      to,
-      childContract,
-      _asSingletonArray(childTokenId),
-      _asSingletonArray(amount),
-      data
-    );
-
-    _removeChild1155(fromTokenId, childContract, childTokenId, amount);
-
-    ERC1155(childContract).safeTransferFrom(
-      address(this),
-      to,
-      childTokenId,
-      amount,
-      data
-    );
-    emit TransferSingleChild1155(
-      fromTokenId,
-      to,
-      childContract,
-      childTokenId,
-      amount
-    );
-  }
-
-  /**
    * @dev Transfers batch of child 1155 tokens from a token ID.
    */
-  function safeBatchTransferChild1155From(
+  function _safeBatchTransferChild1155From(
     uint256 fromTokenId,
     address to,
     address childContract,
     uint256[] memory childTokenIds,
     uint256[] memory amounts,
     bytes memory data
-  ) public override {
+  ) internal {
     require(
       childTokenIds.length == amounts.length,
       "ERC998: ids and amounts length mismatch"
@@ -149,16 +101,6 @@ contract ERC998TopDown is ERC721, IERC998ERC1155TopDown {
       ownerOf(fromTokenId) == operator ||
         isApprovedForAll(ownerOf(fromTokenId), operator),
       "ERC998: caller is not owner nor approved"
-    );
-
-    _beforeChild1155Transfer(
-      operator,
-      fromTokenId,
-      to,
-      childContract,
-      childTokenIds,
-      amounts,
-      data
     );
 
     for (uint256 i = 0; i < childTokenIds.length; ++i) {
@@ -298,25 +240,5 @@ contract ERC998TopDown is ERC721, IERC998ERC1155TopDown {
         _child1155Contracts[tokenId].remove(childContract);
       }
     }
-  }
-
-  function _beforeChild1155Transfer(
-    address operator,
-    uint256 fromTokenId,
-    address to,
-    address childContract,
-    uint256[] memory ids,
-    uint256[] memory amounts,
-    bytes memory data
-  ) internal virtual {}
-
-  function _asSingletonArray(uint256 element)
-    private
-    pure
-    returns (uint256[] memory)
-  {
-    uint256[] memory array = new uint256[](1);
-    array[0] = element;
-    return array;
   }
 }

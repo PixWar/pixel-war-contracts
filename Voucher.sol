@@ -4,10 +4,9 @@ pragma experimental ABIEncoderV2;
 
 import "@openzeppelin/contracts/utils/cryptography/draft-EIP712.sol";
 import "@openzeppelin/contracts/utils/Counters.sol";
-import "@openzeppelin/contracts/interfaces/IERC2981.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
-contract Voucher is EIP712, IERC2981, Ownable {
+contract Voucher is EIP712, Ownable {
   struct VoucherInfo {
     uint256 price;
     string data;
@@ -20,8 +19,6 @@ contract Voucher is EIP712, IERC2981, Ownable {
   string private constant SIGNATURE_VERSION = "1";
 
   address public primarySalesReceiver;
-  address public royaltyReceiver;
-  uint8 public royaltyPercentage;
 
   mapping(address => uint256) private callerNonce;
 
@@ -35,27 +32,12 @@ contract Voucher is EIP712, IERC2981, Ownable {
     string data
   );
 
-  constructor(
-    address signer,
-    address payable primarySalesReceiver_,
-    address payable _royaltyReceiver,
-    uint8 _royaltyPercentage
-  ) EIP712(SIGNING_DOMAIN, SIGNATURE_VERSION) {
+  constructor(address signer, address payable primarySalesReceiver_)
+    EIP712(SIGNING_DOMAIN, SIGNATURE_VERSION)
+  {
     _allowedMinters[signer] = true;
     primarySalesReceiver = primarySalesReceiver_;
-    royaltyReceiver = _royaltyReceiver;
-    royaltyPercentage = _royaltyPercentage;
     _voucherCounter.increment();
-  }
-
-  function supportsInterface(bytes4 interfaceId)
-    public
-    view
-    virtual
-    override(IERC165)
-    returns (bool)
-  {
-    return type(IERC2981).interfaceId == interfaceId;
   }
 
   function buy(VoucherInfo calldata voucher) external payable {
@@ -121,29 +103,5 @@ contract Voucher is EIP712, IERC2981, Ownable {
       id := chainid()
     }
     return id;
-  }
-
-  function setRoyalty(address creator, uint8 _royaltyPercentage)
-    public
-    onlyOwner
-  {
-    royaltyReceiver = creator;
-    royaltyPercentage = _royaltyPercentage;
-  }
-
-  /// @notice Called with the sale price to determine how much royalty
-  //          is owed and to whom.
-  /// @param tokenId - the NFT asset queried for royalty information (not used)
-  /// @param _salePrice - sale price of the NFT asset specified by _tokenId
-  /// @return receiver - address of who should be sent the royalty payment
-  /// @return royaltyAmount - the royalty payment amount for _value sale price
-  function royaltyInfo(uint256 tokenId, uint256 _salePrice)
-    external
-    view
-    override(IERC2981)
-    returns (address receiver, uint256 royaltyAmount)
-  {
-    uint256 _royalties = (_salePrice * royaltyPercentage) / 100;
-    return (royaltyReceiver, _royalties);
   }
 }

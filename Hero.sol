@@ -68,7 +68,8 @@ contract Hero is ERC721Enumerable, ERC998TopDown, Ownable, EIP712, IERC2981 {
   string private _contractURI;
   using Counters for Counters.Counter;
   Counters.Counter private _heroCounter;
-  mapping(address => uint256) private callerNonce;
+  mapping(address => uint256) private mintNonce;
+  mapping(uint256 => uint256) private claimNonce;
   string public provenanceHash;
 
   constructor(
@@ -100,8 +101,12 @@ contract Hero is ERC721Enumerable, ERC998TopDown, Ownable, EIP712, IERC2981 {
     _contractURI = contractURI_;
   }
 
-  function getCallerNonce(address msgSigner) external view returns (uint256) {
-    return callerNonce[msgSigner];
+  function getMintNonce(address msgSigner) external view returns (uint256) {
+    return mintNonce[msgSigner];
+  }
+
+  function getClaimNonce(uint256 tokenId) external view returns (uint256) {
+    return claimNonce[tokenId];
   }
 
   function supportsInterface(bytes4 interfaceId)
@@ -128,7 +133,7 @@ contract Hero is ERC721Enumerable, ERC998TopDown, Ownable, EIP712, IERC2981 {
     external
     onlyAuthorized(bulkChangeVoucher.tokenId)
   {
-    address signer = _verifyBulkChangeData(bulkChangeVoucher);
+    address signer = _verifyBulkChangeData(bulkChangeVoucher, false);
     require(
       _allowedMinters[signer] == true,
       "Signature invalid or unauthorized"
@@ -174,7 +179,7 @@ contract Hero is ERC721Enumerable, ERC998TopDown, Ownable, EIP712, IERC2981 {
     );
 
     require(_msgSender() == voucher.wallet, "Hero: Invalid wallet");
-    callerNonce[_msgSender()]++;
+    mintNonce[_msgSender()]++;
 
     _safeMint(_msgSender(), currentHeroCounter);
     (bool paymentSucess, ) = payable(primarySalesReceiver).call{
@@ -188,22 +193,17 @@ contract Hero is ERC721Enumerable, ERC998TopDown, Ownable, EIP712, IERC2981 {
     external
     onlyAuthorized(voucher.tokenId)
   {
-    require(
-      super
-        .child1155IdsForOn(voucher.tokenId, voucher.itemContractAddress)
-        .length == 0,
-      "Hero: Items already claimed"
-    );
-
-    address signer = _verifyBulkChangeData(voucher);
+    address signer = _verifyBulkChangeData(voucher, true);
 
     require(
       _allowedMinters[signer] == true,
       "Signature invalid or unauthorized"
     );
 
+    claimNonce[voucher.tokenId]++;
+
     IItem(voucher.itemContractAddress).claimFromHero(
-      signer,
+      owner(),
       address(this),
       voucher.itemsToEquip,
       voucher.amountsToEquip,
@@ -255,7 +255,7 @@ contract Hero is ERC721Enumerable, ERC998TopDown, Ownable, EIP712, IERC2981 {
     uint256[] memory _unequipItemIds,
     uint256[] memory _amountsToUnequip
   ) internal {
-    safeBatchTransferChild1155From(
+    _safeBatchTransferChild1155From(
       _tokenId,
       _owner,
       _itemAddress,
@@ -277,7 +277,7 @@ contract Hero is ERC721Enumerable, ERC998TopDown, Ownable, EIP712, IERC2981 {
       SIGNING_DOMAIN,
       SIGNATURE_VERSION,
       address(this),
-      callerNonce[_msgSender()]
+      mintNonce[_msgSender()]
     );
 
     return
@@ -286,11 +286,10 @@ contract Hero is ERC721Enumerable, ERC998TopDown, Ownable, EIP712, IERC2981 {
       );
   }
 
-  function _hashBulkChangeData(BulkChangeVoucher calldata voucher)
-    internal
-    view
-    returns (bytes32)
-  {
+  function _hashBulkChangeData(
+    BulkChangeVoucher calldata voucher,
+    bool includeNonce
+  ) internal view returns (bytes32) {
     bytes memory firstPart = abi.encodePacked(
       voucher.tokenId,
       voucher.itemContractAddress,
@@ -308,10 +307,18 @@ contract Hero is ERC721Enumerable, ERC998TopDown, Ownable, EIP712, IERC2981 {
       address(this)
     );
 
-    return
-      ECDSA.toEthSignedMessageHash(
-        keccak256(abi.encodePacked(firstPart, secondPart))
-      );
+    if (includeNonce) {
+      bytes memory nonce = abi.encodePacked(claimNonce[voucher.tokenId]);
+      return
+        ECDSA.toEthSignedMessageHash(
+          keccak256(abi.encodePacked(firstPart, secondPart, nonce))
+        );
+    } else {
+      return
+        ECDSA.toEthSignedMessageHash(
+          keccak256(abi.encodePacked(firstPart, secondPart))
+        );
+    }
   }
 
   function _verifyMintData(MintVoucher calldata voucher)
@@ -323,12 +330,11 @@ contract Hero is ERC721Enumerable, ERC998TopDown, Ownable, EIP712, IERC2981 {
     return ECDSA.recover(digest, voucher.signature);
   }
 
-  function _verifyBulkChangeData(BulkChangeVoucher calldata voucher)
-    internal
-    view
-    returns (address)
-  {
-    bytes32 digest = _hashBulkChangeData(voucher);
+  function _verifyBulkChangeData(
+    BulkChangeVoucher calldata voucher,
+    bool includeNonce
+  ) internal view returns (address) {
+    bytes32 digest = _hashBulkChangeData(voucher, includeNonce);
     return ECDSA.recover(digest, voucher.signature);
   }
 
@@ -382,26 +388,6 @@ contract Hero is ERC721Enumerable, ERC998TopDown, Ownable, EIP712, IERC2981 {
       "Only the Hero contract can pull items in"
     );
     return super.onERC1155BatchReceived(operator, from, ids, values, data);
-  }
-
-  function _beforeChild1155Transfer(
-    address operator,
-    uint256 fromTokenId,
-    address to,
-    address childContract,
-    uint256[] memory ids,
-    uint256[] memory amounts,
-    bytes memory data
-  ) internal virtual override {
-    super._beforeChild1155Transfer(
-      operator,
-      fromTokenId,
-      to,
-      childContract,
-      ids,
-      amounts,
-      data
-    );
   }
 
   function _beforeTokenTransfer(

@@ -44,22 +44,4 @@ interface IERC998ERC1155TopDown is IERC721, IERC1155Receiver {
     address childContract,
     uint256 childTokenId
   ) external view returns (uint256);
-
-  function safeTransferChild1155From(
-    uint256 fromTokenId,
-    address to,
-    address childContract,
-    uint256 childTokenId,
-    uint256 amount,
-    bytes calldata data
-  ) external;
-
-  function safeBatchTransferChild1155From(
-    uint256 fromTokenId,
-    address to,
-    address childContract,
-    uint256[] calldata childTokenIds,
-    uint256[] calldata amounts,
-    bytes calldata data
-  ) external;
 }
