@@ -118,7 +118,7 @@ contract HeroItem is IItem, ERC1155, Ownable, EIP712, IERC2981 {
 
     if (voucher.items.length > 0) {
       _safeBatchTransferFrom(
-        signer,
+        owner(),
         _msgSender(),
         voucher.items,
         voucher.amounts,
